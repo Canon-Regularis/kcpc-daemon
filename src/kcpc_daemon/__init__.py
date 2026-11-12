@@ -1,0 +1,1 @@
+"""KCPC competition telemetry daemon."""
