@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src
+      - run: uv run pytest
+      - run: docker build -t kcpc-daemon .
+      - name: Smoke test container
+        run: |
+          docker run -d --name kcpc-daemon-test -p 127.0.0.1:18080:8080 kcpc-daemon
+          trap 'docker logs kcpc-daemon-test; docker rm -f kcpc-daemon-test' EXIT
+          curl --fail --retry 10 --retry-all-errors --retry-delay 1 http://127.0.0.1:18080/health
+          docker stop -t 10 kcpc-daemon-test
+          test "$(docker inspect -f '{{.State.ExitCode}}' kcpc-daemon-test)" = 0

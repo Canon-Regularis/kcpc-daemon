@@ -1,0 +1,36 @@
+[project]
+name = "kcpc-daemon"
+version = "0.1.0"
+description = "Competition telemetry relay for KCPC Bot"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiohttp>=3.11,<4",
+    "aiosqlite>=0.20,<1",
+    "pydantic>=2.10,<3",
+    "pyyaml>=6.0,<7",
+]
+
+[project.scripts]
+kcpc-daemon = "kcpc_daemon.main:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13,<2",
+    "pytest>=8.3,<10",
+    "pytest-asyncio>=0.25,<2",
+    "ruff>=0.9,<1",
+    "types-PyYAML>=6.0,<7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
