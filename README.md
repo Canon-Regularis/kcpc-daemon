@@ -27,6 +27,8 @@ feeds:
 
 Each feed needs a unique, stable `id` and an HTTP(S) URL. The endpoint should stream newline-delimited JSON objects with string `type`, `id` and `token` fields and an object or null `data` field. Empty lines are keepalives. The daemon stores the last validated token in SQLite and reconnects with `since_token` in the query string after a disconnect, read timeout, invalid event, or restart. Retries use exponential backoff up to 60 seconds. An invalid event does not advance the cursor and must be fixed at the source before the feed can progress.
 
+For a Bachelier feed set `source: bachelier` and optionally `aggregation_seconds` (default 60) on the feed; the default source is `code_court`. Bachelier types are `prices`, `trades`, `market_events`, and `leaderboard`. Prices and trades are held in separate periodic snapshots per competition and community. A snapshot retains the latest data for each object ID and a count of updates in `data: {count, items}`. Its event ID is the first event's ID, and its type is the source type. Other Bachelier events are delivered individually. Pending snapshots and the cursor are stored together in SQLite and survive restart. The Bachelier feed and Bot support for this proposed snapshot format remain to be integrated.
+
 Routed events are queued in SQLite together with their feed cursor, so keep the database on persistent storage. Events with no matching route are skipped. A configured Bot receives queued events; without one they remain in the outbox.
 
 ## Code Court events and routes
