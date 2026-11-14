@@ -9,6 +9,7 @@ import httpx
 
 from kcpc_daemon.config import FeedConfig, RouteConfig
 from kcpc_daemon.events import FeedEvent, normalize, route
+from kcpc_daemon.outbox import record_event
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +22,20 @@ async def run_feed(
     feed: FeedConfig,
     database: aiosqlite.Connection,
     routes: list[RouteConfig] | None = None,
+    lock: asyncio.Lock | None = None,
 ) -> None:
     """Reconnect forever; only validated events advance the durable cursor."""
     delay = 1.0
+    lock = lock or asyncio.Lock()
     timeout = httpx.Timeout(10.0, read=feed.read_timeout_seconds)
     async with httpx.AsyncClient(timeout=timeout) as client:
         while True:
-            async with database.execute(
-                "SELECT token FROM feed_cursors WHERE feed_id = ?", (feed.id,)
-            ) as cursor:
+            async with (
+                lock,
+                database.execute(
+                    "SELECT token FROM feed_cursors WHERE feed_id = ?", (feed.id,)
+                ) as cursor,
+            ):
                 row = await cursor.fetchone()
             url = httpx.URL(str(feed.url))
             if row:
@@ -53,12 +59,14 @@ async def run_feed(
                             community = (
                                 route(normalized, routes or []) if normalized else None
                             )
-                            await database.execute(
-                                "INSERT INTO feed_cursors (feed_id, token) VALUES (?, ?) "
-                                "ON CONFLICT(feed_id) DO UPDATE SET token = excluded.token",
-                                (feed.id, event.token),
+                            await record_event(
+                                database,
+                                lock,
+                                feed.id,
+                                event.token,
+                                normalized,
+                                community,
                             )
-                            await database.commit()
                             logger.info(
                                 "Feed event received competition_id=%s object_id=%s type=%s community=%s event_id=%s",
                                 feed.id,

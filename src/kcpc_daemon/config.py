@@ -4,7 +4,15 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 
 class FeedConfig(BaseModel):
@@ -22,6 +30,33 @@ class RouteConfig(BaseModel):
     community: str = Field(min_length=1)
     event_types: list[str] = Field(default_factory=list)
 
+    @field_validator("community")
+    @classmethod
+    def header_safe_community(cls, value: str) -> str:
+        if any(not 0x21 <= ord(char) <= 0x7E for char in value):
+            raise ValueError(
+                "community must contain only printable ASCII characters without spaces"
+            )
+        return value
+
+
+class BotConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: HttpUrl
+    token: SecretStr
+
+    @field_validator("token")
+    @classmethod
+    def header_safe_token(cls, value: SecretStr) -> SecretStr:
+        token = value.get_secret_value()
+        if not token or any(
+            not (char.isascii() and (char.isalnum() or char in "-._~+/="))
+            for char in token
+        ):
+            raise ValueError("token must be a nonempty bearer token")
+        return value
+
 
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -32,6 +67,7 @@ class Config(BaseModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     feeds: list[FeedConfig] = Field(default_factory=list)
     routes: list[RouteConfig] = Field(default_factory=list)
+    bot: BotConfig | None = None
 
     @model_validator(mode="after")
     def unique_feed_ids(self) -> "Config":
