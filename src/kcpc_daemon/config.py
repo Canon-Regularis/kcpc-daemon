@@ -15,6 +15,14 @@ class FeedConfig(BaseModel):
     read_timeout_seconds: float = Field(default=60, gt=0)
 
 
+class RouteConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    competition_id: str = Field(min_length=1)
+    community: str = Field(min_length=1)
+    event_types: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -23,11 +31,19 @@ class Config(BaseModel):
     database_path: Path = Path("data/daemon.sqlite3")
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     feeds: list[FeedConfig] = Field(default_factory=list)
+    routes: list[RouteConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def unique_feed_ids(self) -> "Config":
         if len({feed.id for feed in self.feeds}) != len(self.feeds):
             raise ValueError("feed ids must be unique")
+        if len({route.competition_id for route in self.routes}) != len(self.routes):
+            raise ValueError("only one route per competition is supported")
+        if any(
+            route.competition_id not in {feed.id for feed in self.feeds}
+            for route in self.routes
+        ):
+            raise ValueError("route competition_id must match a feed id")
         return self
 
 

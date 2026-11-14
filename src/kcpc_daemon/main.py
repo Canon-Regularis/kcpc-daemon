@@ -39,7 +39,8 @@ async def serve(config: Config, stop: asyncio.Event) -> None:
             await site.start()
             logger.info("Daemon listening on %s:%s", config.host, config.port)
             tasks = [
-                asyncio.create_task(run_feed(feed, database)) for feed in config.feeds
+                asyncio.create_task(run_feed(feed, database, config.routes))
+                for feed in config.feeds
             ]
             stop_task = asyncio.create_task(stop.wait())
             done, _ = await asyncio.wait(
