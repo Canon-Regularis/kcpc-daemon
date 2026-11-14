@@ -75,8 +75,10 @@ class Config(BaseModel):
     def unique_feed_ids(self) -> "Config":
         if len({feed.id for feed in self.feeds}) != len(self.feeds):
             raise ValueError("feed ids must be unique")
-        if len({route.competition_id for route in self.routes}) != len(self.routes):
-            raise ValueError("only one route per competition is supported")
+        if len(
+            {(route.competition_id, route.community) for route in self.routes}
+        ) != len(self.routes):
+            raise ValueError("routes must have unique competition and community pairs")
         if any(
             route.competition_id not in {feed.id for feed in self.feeds}
             for route in self.routes

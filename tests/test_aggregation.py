@@ -20,7 +20,7 @@ async def test_bachelier_aggregation_survives_reopen(tmp_path: Path) -> None:
                 "bachelier",
             )
             assert event is not None
-            await record_event(db, lock, "trading", token, event, "club", 60)
+            await record_event(db, lock, "trading", token, event, ["club"], 60)
     async with aiosqlite.connect(path) as db:
         await initialize(db)
         async with db.execute("SELECT payload, available_at FROM outbox") as cursor:

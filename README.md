@@ -35,7 +35,7 @@ Routed events are queued in SQLite together with their feed cursor, so keep the 
 
 Code Court events of type `contests`, `state`, `problems`, `teams`, `submissions`, `judgements`, and `awards` are normalized. Other types are ignored. A normalized event contains `event_id` (a SHA-256 digest of the JSON-encoded pair of feed ID and token), `competition_id` (the feed ID), `source` (`code_court`), `type`, `object_id`, and `data` (the original object or null for deletion). The same feed token produces the same event ID across reconnects; different feeds have distinct IDs. Tokens must uniquely identify changes within a feed.
 
-An optional route selects one community for each competition. An empty or omitted `event_types` list includes all supported types. For example:
+Routes select communities for each competition. Each competition and community pair may appear once, with its own event filter. An empty or omitted `event_types` list includes all supported types. For example:
 
 ```yaml
 routes:
@@ -56,7 +56,7 @@ bot:
   token: replace-with-shared-secret
 ```
 
-Protect the configuration file because it contains the shared secret. The daemon POSTs the normalized event as JSON with `Authorization: Bearer <token>`, `Idempotency-Key: <event_id>`, and `X-Community-Key: <community>`. Any 2xx response acknowledges the event; all other responses and network failures are retried with exponential backoff. Delivery is at least once: the Bot must persistently deduplicate the idempotency key before acknowledging. The Bot endpoint is not yet available, so this contract is exercised with a mock and must be agreed with that project.
+Protect the configuration file because it contains the shared secret. The daemon POSTs the normalized event as JSON with `Authorization: Bearer <token>`, `Idempotency-Key: <delivery_key>`, and `X-Community-Key: <community>`. Any 2xx response acknowledges the event; all other responses and network failures are retried with exponential backoff. New delivery keys are SHA-256 hashes of the JSON-encoded event ID and community pair; pending deliveries created before federation keep their original key. Delivery is at least once: the Bot must persistently deduplicate the idempotency key before acknowledging. The Bot endpoint is not yet available, so this contract is exercised with a mock and must be agreed with that project.
 
 ## Docker
 
