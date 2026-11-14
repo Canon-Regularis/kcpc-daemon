@@ -58,6 +58,10 @@ bot:
 
 Protect the configuration file because it contains the shared secret. The daemon POSTs the normalized event as JSON with `Authorization: Bearer <token>`, `Idempotency-Key: <delivery_key>`, and `X-Community-Key: <community>`. Any 2xx response acknowledges the event; all other responses and network failures are retried with exponential backoff. New delivery keys are SHA-256 hashes of the JSON-encoded event ID and community pair; pending deliveries created before federation keep their original key. Delivery is at least once: the Bot must persistently deduplicate the idempotency key before acknowledging. The Bot endpoint is not yet available, so this contract is exercised with a mock and must be agreed with that project.
 
+## Recovery
+
+After a daemon restart, each feed resumes after its saved token and queued deliveries remain in SQLite. A Bot outage leaves events in the outbox for retry. Lifecycle events are replayed, and Bachelier telemetry is aggregated in the normal ingestion windows. A downtime catch-up policy that collapses all stale telemetry into one summary is not yet implemented: the feed contract does not currently identify event age or the end of replay. Do not treat the normal windows as that catch-up summary.
+
 ## Docker
 
 ```sh
