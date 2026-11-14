@@ -9,7 +9,7 @@ import aiohttp
 import pytest
 from pydantic import ValidationError
 
-from kcpc_daemon.config import Config, load_config
+from kcpc_daemon.config import Config, FeedConfig, load_config
 from kcpc_daemon.main import serve
 
 
@@ -52,12 +52,54 @@ async def test_health_and_shutdown(tmp_path: Path) -> None:
             else:
                 pytest.fail("health server did not start")
         assert config.database_path.exists()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"http://127.0.0.1:{port}/ready") as response:
+                assert response.status == 200
+            async with session.get(f"http://127.0.0.1:{port}/metrics") as response:
+                metrics = await response.text()
+                assert "kcpc_outbox_depth 0" in metrics
+                assert "kcpc_handoff_failures_total 0" in metrics
     finally:
         stop.set()
         await asyncio.wait_for(task, timeout=2)
     async with aiohttp.ClientSession() as session:
         with pytest.raises(aiohttp.ClientConnectorError):
             await session.get(f"http://127.0.0.1:{port}/health")
+
+
+async def test_unavailable_feed_is_not_ready(tmp_path: Path) -> None:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        feed_port = sock.getsockname()[1]
+    config = Config(
+        port=port,
+        database_path=tmp_path / "db",
+        feeds=[FeedConfig(id="contest", url=f"http://127.0.0.1:{feed_port}/feed")],
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(serve(config, stop))
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with asyncio.timeout(5):
+                while True:
+                    try:
+                        async with session.get(
+                            f"http://127.0.0.1:{port}/ready"
+                        ) as response:
+                            assert response.status == 503
+                            break
+                    except aiohttp.ClientConnectorError:
+                        await asyncio.sleep(0.01)
+            async with session.get(f"http://127.0.0.1:{port}/metrics") as response:
+                assert (
+                    'kcpc_feed_connected{feed_id="contest"} 0' in await response.text()
+                )
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 5)
 
 
 async def test_database_failure_prevents_start(tmp_path: Path) -> None:
@@ -101,3 +143,72 @@ async def test_sigterm_stops_process(tmp_path: Path) -> None:
         if process.returncode is None:
             process.kill()
             await process.wait()
+
+
+async def test_silent_connected_feed_is_not_ready(tmp_path: Path) -> None:
+    from aiohttp import web
+
+    connected = asyncio.Event()
+    release = asyncio.Event()
+
+    async def silent(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        connected.set()
+        await release.wait()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/feed", silent)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    assert site._server is not None
+    feed_port = site._server.sockets[0].getsockname()[1]
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    config = Config(
+        port=port,
+        database_path=tmp_path / "db",
+        feeds=[FeedConfig(id="contest", url=f"http://127.0.0.1:{feed_port}/feed")],
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(serve(config, stop))
+    try:
+        await asyncio.wait_for(connected.wait(), 5)
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"http://127.0.0.1:{port}/ready") as response:
+                assert response.status == 503
+            async with asyncio.timeout(5):
+                while True:
+                    async with session.get(
+                        f"http://127.0.0.1:{port}/metrics"
+                    ) as response:
+                        if (
+                            'kcpc_feed_connected{feed_id="contest"} 1'
+                            in await response.text()
+                        ):
+                            break
+                    await asyncio.sleep(0.01)
+    finally:
+        release.set()
+        stop.set()
+        await asyncio.wait_for(task, 5)
+        await runner.cleanup()
+
+
+def test_monitor_keeps_activity_when_connection_changes() -> None:
+    from kcpc_daemon.monitor import Monitor
+
+    monitor = Monitor({"contest": 60})
+    monitor.connected.add("contest")
+    monitor.touch("contest")
+    last_activity = monitor.activity["contest"]
+    assert monitor.alive("contest")
+    monitor.connected.discard("contest")
+    monitor.active.discard("contest")
+    monitor.connected.add("contest")
+    assert not monitor.alive("contest")
+    assert monitor.activity["contest"] == last_activity

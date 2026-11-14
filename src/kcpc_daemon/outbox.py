@@ -11,6 +11,7 @@ import httpx
 
 from kcpc_daemon.config import BotConfig
 from kcpc_daemon.events import TELEMETRY_TYPES, NormalizedEvent
+from kcpc_daemon.monitor import Monitor
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,10 @@ async def record_event(
 
 
 async def deliver(
-    database: aiosqlite.Connection, lock: asyncio.Lock, bot: BotConfig
+    database: aiosqlite.Connection,
+    lock: asyncio.Lock,
+    bot: BotConfig,
+    monitor: Monitor | None = None,
 ) -> None:
     retries: dict[str, float] = {}
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -160,6 +164,8 @@ async def deliver(
                 )
                 response.raise_for_status()
             except httpx.HTTPError as exc:
+                if monitor is not None:
+                    monitor.handoff_failures += 1
                 logger.warning(
                     "Bot delivery failed event_id=%s community=%s error=%s",
                     event_id,
