@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import signal
+import time
 from pathlib import Path
 
 import aiosqlite
@@ -12,6 +13,7 @@ from aiohttp import web
 
 from kcpc_daemon.config import Config, load_config
 from kcpc_daemon.feed import run_feed
+from kcpc_daemon.monitor import Monitor
 from kcpc_daemon.outbox import deliver, initialize
 
 logger = logging.getLogger(__name__)
@@ -26,8 +28,42 @@ async def serve(config: Config, stop: asyncio.Event) -> None:
     async with aiosqlite.connect(config.database_path) as database:
         await initialize(database)
         lock = asyncio.Lock()
+        monitor = Monitor({feed.id: feed.read_timeout_seconds for feed in config.feeds})
         app = web.Application()
         app.router.add_get("/health", health)
+
+        async def ready(_request: web.Request) -> web.Response:
+            ready_now = all(monitor.alive(feed.id) for feed in config.feeds)
+            return web.json_response(
+                {"status": "ready" if ready_now else "not ready"},
+                status=200 if ready_now else 503,
+            )
+
+        async def metrics(_request: web.Request) -> web.Response:
+            async with lock, database.execute("SELECT count(*) FROM outbox") as cursor:
+                row = await cursor.fetchone()
+            assert row is not None
+            lines = [
+                f"kcpc_outbox_depth {row[0]}",
+                f"kcpc_handoff_failures_total {monitor.handoff_failures}",
+            ]
+            for feed in config.feeds:
+                label = (
+                    feed.id.replace("\\", "\\\\")
+                    .replace('"', '\\"')
+                    .replace("\n", "\\n")
+                )
+                lines.append(
+                    f'kcpc_feed_connected{{feed_id="{label}"}} {int(feed.id in monitor.connected)}'
+                )
+                if feed.id in monitor.activity:
+                    lines.append(
+                        f'kcpc_feed_idle_seconds{{feed_id="{label}"}} {max(0, time.monotonic() - monitor.activity[feed.id]):.3f}'
+                    )
+            return web.Response(text="\n".join(lines) + "\n", content_type="text/plain")
+
+        app.router.add_get("/ready", ready)
+        app.router.add_get("/metrics", metrics)
         runner = web.AppRunner(app, handle_signals=False)
         await runner.setup()
         tasks: list[asyncio.Task[None]] = []
@@ -37,11 +73,15 @@ async def serve(config: Config, stop: asyncio.Event) -> None:
             await site.start()
             logger.info("Daemon listening on %s:%s", config.host, config.port)
             tasks = [
-                asyncio.create_task(run_feed(feed, database, config.routes, lock))
+                asyncio.create_task(
+                    run_feed(feed, database, config.routes, lock, monitor)
+                )
                 for feed in config.feeds
             ]
             if config.bot is not None:
-                tasks.append(asyncio.create_task(deliver(database, lock, config.bot)))
+                tasks.append(
+                    asyncio.create_task(deliver(database, lock, config.bot, monitor))
+                )
             stop_task = asyncio.create_task(stop.wait())
             done, _ = await asyncio.wait(
                 [stop_task, *tasks], return_when=asyncio.FIRST_COMPLETED

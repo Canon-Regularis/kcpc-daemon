@@ -7,6 +7,7 @@ from aiohttp import web
 
 from kcpc_daemon.config import BotConfig, RouteConfig
 from kcpc_daemon.events import FeedEvent, normalize
+from kcpc_daemon.monitor import Monitor
 from kcpc_daemon.outbox import deliver, delivery_key, initialize, record_event
 
 
@@ -60,11 +61,13 @@ async def test_atomic_record_and_retry_delivery(tmp_path: Path) -> None:
             await record_event(db, lock, "contest", "1", event, ["club"])
             async with db.execute("SELECT count(*) FROM outbox") as cursor:
                 assert await cursor.fetchone() == (1,)
+            monitor = Monitor({})
             task = asyncio.create_task(
                 deliver(
                     db,
                     lock,
                     BotConfig(url=f"http://127.0.0.1:{port}/ingest", token="secret"),
+                    monitor,
                 )
             )
             try:
@@ -83,6 +86,7 @@ async def test_atomic_record_and_retry_delivery(tmp_path: Path) -> None:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             assert len(attempts) == 2
+            assert monitor.handoff_failures == 1
             assert attempts[0] == attempts[1]
             assert attempts[0][:3] == (
                 "Bearer secret",
