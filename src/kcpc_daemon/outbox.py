@@ -1,13 +1,15 @@
 """Durable queue and authenticated, at-least-once Bot handoff."""
 
 import asyncio
+import json
 import logging
+import time
 
 import aiosqlite
 import httpx
 
 from kcpc_daemon.config import BotConfig
-from kcpc_daemon.events import NormalizedEvent
+from kcpc_daemon.events import TELEMETRY_TYPES, NormalizedEvent
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,14 @@ async def initialize(database: aiosqlite.Connection) -> None:
     await database.execute(
         "CREATE TABLE IF NOT EXISTS outbox (event_id TEXT PRIMARY KEY, community TEXT NOT NULL, payload TEXT NOT NULL)"
     )
+    async with database.execute("PRAGMA table_info(outbox)") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    if "available_at" not in columns:
+        await database.execute(
+            "ALTER TABLE outbox ADD COLUMN available_at REAL NOT NULL DEFAULT 0"
+        )
+    if "aggregate_key" not in columns:
+        await database.execute("ALTER TABLE outbox ADD COLUMN aggregate_key TEXT")
     await database.commit()
 
 
@@ -29,14 +39,54 @@ async def record_event(
     token: str,
     event: NormalizedEvent | None,
     community: str | None,
+    aggregation_seconds: int = 60,
 ) -> None:
     async with lock:
         try:
             if event is not None and community is not None:
-                await database.execute(
-                    "INSERT OR IGNORE INTO outbox (event_id, community, payload) VALUES (?, ?, ?)",
-                    (event.event_id, community, event.model_dump_json()),
-                )
+                if event.source == "bachelier" and event.type in TELEMETRY_TYPES:
+                    now = time.time()
+                    key = json.dumps([feed_id, community, event.type])
+                    async with database.execute(
+                        "SELECT event_id, payload FROM outbox WHERE aggregate_key = ? AND available_at > ? ORDER BY rowid LIMIT 1",
+                        (key, now),
+                    ) as cursor:
+                        existing = await cursor.fetchone()
+                    if existing:
+                        snapshot = NormalizedEvent.model_validate_json(existing[1])
+                        assert snapshot.data is not None
+                        items = snapshot.data["items"]
+                        assert isinstance(items, dict)
+                        items[event.object_id] = event.data
+                        snapshot.data["count"] = int(snapshot.data["count"]) + 1  # type: ignore[call-overload]
+                        await database.execute(
+                            "UPDATE outbox SET payload = ? WHERE event_id = ?",
+                            (snapshot.model_dump_json(), existing[0]),
+                        )
+                    else:
+                        snapshot = event.model_copy(
+                            update={
+                                "data": {
+                                    "count": 1,
+                                    "items": {event.object_id: event.data},
+                                }
+                            }
+                        )
+                        await database.execute(
+                            "INSERT OR IGNORE INTO outbox (event_id, community, payload, available_at, aggregate_key) VALUES (?, ?, ?, ?, ?)",
+                            (
+                                event.event_id,
+                                community,
+                                snapshot.model_dump_json(),
+                                now + aggregation_seconds,
+                                key,
+                            ),
+                        )
+                else:
+                    await database.execute(
+                        "INSERT OR IGNORE INTO outbox (event_id, community, payload) VALUES (?, ?, ?)",
+                        (event.event_id, community, event.model_dump_json()),
+                    )
             await database.execute(
                 "INSERT INTO feed_cursors (feed_id, token) VALUES (?, ?) "
                 "ON CONFLICT(feed_id) DO UPDATE SET token = excluded.token",
@@ -57,7 +107,8 @@ async def deliver(
             async with (
                 lock,
                 database.execute(
-                    "SELECT event_id, community, payload FROM outbox ORDER BY rowid LIMIT 1"
+                    "SELECT event_id, community, payload FROM outbox WHERE available_at <= ? ORDER BY rowid LIMIT 1",
+                    (time.time(),),
                 ) as cursor,
             ):
                 row = await cursor.fetchone()

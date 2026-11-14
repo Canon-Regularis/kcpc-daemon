@@ -21,6 +21,8 @@ class FeedConfig(BaseModel):
     id: str = Field(min_length=1)
     url: HttpUrl
     read_timeout_seconds: float = Field(default=60, gt=0)
+    source: Literal["code_court", "bachelier"] = "code_court"
+    aggregation_seconds: int = Field(default=60, ge=1)
 
 
 class RouteConfig(BaseModel):

@@ -55,7 +55,7 @@ async def run_feed(
                                     line.decode("utf-8"), parse_constant=reject_constant
                                 )
                             )
-                            normalized = normalize(feed.id, event)
+                            normalized = normalize(feed.id, event, feed.source)
                             community = (
                                 route(normalized, routes or []) if normalized else None
                             )
@@ -66,6 +66,7 @@ async def run_feed(
                                 event.token,
                                 normalized,
                                 community,
+                                feed.aggregation_seconds,
                             )
                             logger.info(
                                 "Feed event received competition_id=%s object_id=%s type=%s community=%s event_id=%s",
