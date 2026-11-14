@@ -81,3 +81,5 @@ uv run ruff format --check .
 uv run mypy src
 uv run pytest
 ```
+
+The test suite includes a synthetic 500-event contest feed and a deduplicating mock Bot. It checks that each submission reaches the mock once despite a deliberately lost acknowledgement; it is a functional simulation, not a production throughput benchmark or a substitute for real Bot and Discord testing.
