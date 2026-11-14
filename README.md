@@ -27,7 +27,7 @@ feeds:
 
 Each feed needs a unique, stable `id` and an HTTP(S) URL. The endpoint should stream newline-delimited JSON objects with string `type`, `id` and `token` fields and an object or null `data` field. Empty lines are keepalives. The daemon stores the last validated token in SQLite and reconnects with `since_token` in the query string after a disconnect, read timeout, invalid event, or restart. Retries use exponential backoff up to 60 seconds. An invalid event does not advance the cursor and must be fixed at the source before the feed can progress.
 
-This milestone logs received events and persists their tokens; it does not retain event contents or deliver them to the Bot. Use a mock feed for MVP 1. Delivery and atomic outbox persistence are planned for a later milestone, so these cursors do not provide delivery guarantees.
+Routed events are queued in SQLite together with their feed cursor, so keep the database on persistent storage. Events with no matching route are skipped. A configured Bot receives queued events; without one they remain in the outbox.
 
 ## Code Court events and routes
 
@@ -42,7 +42,19 @@ routes:
     event_types: [submissions, judgements]
 ```
 
-At this stage the selected community and normalized event ID are logged; events are not yet queued or sent. The community is a logical key, not a Discord channel ID.
+The community is a logical key, not a Discord channel ID. It must contain printable ASCII characters without spaces so it can be passed in an HTTP header.
+
+## Bot handoff
+
+Configure a Bot ingest URL and bearer token to enable delivery:
+
+```yaml
+bot:
+  url: http://127.0.0.1:9001/internal/events
+  token: replace-with-shared-secret
+```
+
+Protect the configuration file because it contains the shared secret. The daemon POSTs the normalized event as JSON with `Authorization: Bearer <token>`, `Idempotency-Key: <event_id>`, and `X-Community-Key: <community>`. Any 2xx response acknowledges the event; all other responses and network failures are retried with exponential backoff. Delivery is at least once: the Bot must persistently deduplicate the idempotency key before acknowledging. The Bot endpoint is not yet available, so this contract is exercised with a mock and must be agreed with that project.
 
 ## Docker
 
