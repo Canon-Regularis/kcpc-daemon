@@ -3,3 +3,4 @@ port: 8080
 database_path: data/daemon.sqlite3
 log_level: INFO
 feeds: []
+routes: []
