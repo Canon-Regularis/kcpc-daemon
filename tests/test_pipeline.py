@@ -10,6 +10,7 @@ from aiohttp import web
 
 from kcpc_daemon.config import BotConfig, Config, FeedConfig, RouteConfig
 from kcpc_daemon.main import serve
+from kcpc_daemon.outbox import delivery_key
 
 
 async def test_contest_reaches_mock_bot(tmp_path: Path) -> None:
@@ -78,7 +79,7 @@ async def test_contest_reaches_mock_bot(tmp_path: Path) -> None:
             "sub-1",
             "contest",
         )
-        assert key == event["event_id"]
+        assert key == delivery_key(event["event_id"], "club")
         assert community == "club"
         async with (
             aiohttp.ClientSession() as session,
