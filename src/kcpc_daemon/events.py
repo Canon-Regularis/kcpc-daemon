@@ -21,6 +21,8 @@ class FeedEvent(BaseModel):
 CODE_COURT_TYPES = frozenset(
     {"contests", "state", "problems", "teams", "submissions", "judgements", "awards"}
 )
+BACHELIER_TYPES = frozenset({"prices", "trades", "market_events", "leaderboard"})
+TELEMETRY_TYPES = frozenset({"prices", "trades"})
 
 
 class NormalizedEvent(BaseModel):
@@ -28,19 +30,26 @@ class NormalizedEvent(BaseModel):
 
     event_id: str
     competition_id: str
-    source: Literal["code_court"] = "code_court"
+    source: Literal["code_court", "bachelier"] = "code_court"
     type: str
     object_id: str
     data: dict[str, object] | None
 
 
-def normalize(competition_id: str, event: FeedEvent) -> NormalizedEvent | None:
-    if event.type not in CODE_COURT_TYPES:
+def normalize(
+    competition_id: str,
+    event: FeedEvent,
+    source: Literal["code_court", "bachelier"] = "code_court",
+) -> NormalizedEvent | None:
+    if event.type not in (
+        CODE_COURT_TYPES if source == "code_court" else BACHELIER_TYPES
+    ):
         return None
     identity = json.dumps([competition_id, event.token], ensure_ascii=False).encode()
     return NormalizedEvent(
         event_id=hashlib.sha256(identity).hexdigest(),
         competition_id=competition_id,
+        source=source,
         type=event.type,
         object_id=event.id,
         data=event.data,
