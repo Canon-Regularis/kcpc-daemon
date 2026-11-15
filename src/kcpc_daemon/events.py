@@ -56,10 +56,10 @@ def normalize(
     )
 
 
-def route(event: NormalizedEvent, routes: list[RouteConfig]) -> str | None:
-    for item in routes:
-        if item.competition_id == event.competition_id and (
-            not item.event_types or event.type in item.event_types
-        ):
-            return item.community
-    return None
+def route(event: NormalizedEvent, routes: list[RouteConfig]) -> list[str]:
+    return [
+        item.community
+        for item in routes
+        if item.competition_id == event.competition_id
+        and (not item.event_types or event.type in item.event_types)
+    ]

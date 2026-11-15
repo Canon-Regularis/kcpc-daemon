@@ -20,7 +20,7 @@ async def test_bachelier_aggregation_survives_reopen(tmp_path: Path) -> None:
                 "bachelier",
             )
             assert event is not None
-            await record_event(db, lock, "trading", token, event, "club", 60)
+            await record_event(db, lock, "trading", token, event, ["club"], 60)
     async with aiosqlite.connect(path) as db:
         await initialize(db)
         async with db.execute("SELECT payload, available_at FROM outbox") as cursor:
@@ -54,24 +54,29 @@ async def test_replayed_telemetry_is_not_aggregated_after_delivery(
     assert first is not None and second is not None
     async with aiosqlite.connect(path) as db:
         await initialize(db)
-        await record_event(db, lock, "trading", "1", first, "club")
-        await record_event(db, lock, "trading", "1", first, "club")
-        async with db.execute("SELECT payload FROM outbox") as cursor:
-            assert json.loads((await cursor.fetchone())[0])["data"]["count"] == 1
+        await record_event(db, lock, "trading", "1", first, ["club", "other"])
+        await record_event(db, lock, "trading", "1", first, ["club", "other"])
+        async with db.execute(
+            "SELECT payload FROM outbox ORDER BY community"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            assert len(rows) == 2
+            assert all(json.loads(row[0])["data"]["count"] == 1 for row in rows)
         await db.execute("DELETE FROM outbox")
         await db.commit()
     async with aiosqlite.connect(path) as db:
         await initialize(db)
-        await record_event(db, lock, "trading", "1", first, "club")
-        await record_event(db, lock, "trading", "2", second, "club")
+        await record_event(db, lock, "trading", "1", first, ["club", "other"])
+        await record_event(db, lock, "trading", "2", second, ["club", "other"])
         async with db.execute("SELECT event_id, payload FROM outbox") as cursor:
             rows = await cursor.fetchall()
-        assert len(rows) == 1
-        assert rows[0][0] == second.event_id
-        assert json.loads(rows[0][1])["data"] == {
-            "count": 1,
-            "items": {"ABC": {"price": 11}},
-        }
+        assert len(rows) == 2
+        for event_id, payload in rows:
+            assert event_id == second.event_id
+            assert json.loads(payload)["data"] == {
+                "count": 1,
+                "items": {"ABC": {"price": 11}},
+            }
 
 
 def test_bachelier_event_types() -> None:

@@ -66,8 +66,8 @@ async def run_feed(
                                 )
                             )
                             normalized = normalize(feed.id, event, feed.source)
-                            community = (
-                                route(normalized, routes or []) if normalized else None
+                            communities = (
+                                route(normalized, routes or []) if normalized else []
                             )
                             await record_event(
                                 database,
@@ -75,7 +75,7 @@ async def run_feed(
                                 feed.id,
                                 event.token,
                                 normalized,
-                                community,
+                                communities,
                                 feed.aggregation_seconds,
                             )
                             logger.info(
@@ -83,7 +83,7 @@ async def run_feed(
                                 feed.id,
                                 event.id,
                                 event.type,
-                                community,
+                                communities,
                                 normalized.event_id if normalized else None,
                             )
                             delay = 1.0
