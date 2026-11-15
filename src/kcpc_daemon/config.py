@@ -35,9 +35,11 @@ class RouteConfig(BaseModel):
     @field_validator("community")
     @classmethod
     def header_safe_community(cls, value: str) -> str:
-        if any(not 0x21 <= ord(char) <= 0x7E for char in value):
+        if value != value.strip() or any(
+            not 0x20 <= ord(char) <= 0x7E for char in value
+        ):
             raise ValueError(
-                "community must contain only printable ASCII characters without spaces"
+                "community must contain printable ASCII without leading or trailing spaces"
             )
         return value
 

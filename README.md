@@ -46,7 +46,7 @@ routes:
     event_types: [submissions, judgements]
 ```
 
-The community is a logical key, not a Discord channel ID. It must contain printable ASCII characters without spaces so it can be passed in an HTTP header.
+The community is a logical key, not a Discord channel ID. It must contain printable ASCII characters without leading or trailing spaces so it can be passed in an HTTP header.
 
 ## Bot handoff
 

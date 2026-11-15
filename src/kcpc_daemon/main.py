@@ -9,6 +9,7 @@ from pathlib import Path
 import aiosqlite
 import yaml
 from aiohttp import web
+from pydantic import ValidationError
 
 from kcpc_daemon.config import Config, load_config
 from kcpc_daemon.feed import run_feed
@@ -79,7 +80,11 @@ def main() -> None:
     args = parser.parse_args()
     try:
         config = load_config(args.config)
-    except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
+    except ValidationError as exc:
+        parser.exit(2, f"Invalid configuration: {exc.json(include_input=False)}\n")
+    except yaml.YAMLError:
+        parser.exit(2, "Invalid configuration: malformed YAML\n")
+    except (OSError, ValueError, TypeError) as exc:
         parser.exit(2, f"Invalid configuration: {exc}\n")
     logging.basicConfig(
         level=config.log_level,
