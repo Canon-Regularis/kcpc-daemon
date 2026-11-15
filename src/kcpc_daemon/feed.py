@@ -10,7 +10,7 @@ import httpx
 from kcpc_daemon.config import FeedConfig, RouteConfig
 from kcpc_daemon.events import FeedEvent, normalize, route
 from kcpc_daemon.monitor import Monitor
-from kcpc_daemon.outbox import record_event
+from kcpc_daemon.outbox import record_event, set_catch_up
 
 logger = logging.getLogger(__name__)
 MAX_EVENT_LINE_BYTES = 1024 * 1024
@@ -67,11 +67,16 @@ async def run_feed(
                                 raise ValueError("Feed event line too long")
                             if not line.strip():
                                 continue
-                            event = FeedEvent.model_validate(
-                                json.loads(
-                                    line.decode("utf-8"), parse_constant=reject_constant
-                                )
+                            raw = json.loads(
+                                line.decode("utf-8"), parse_constant=reject_constant
                             )
+                            if feed.catch_up and raw == {"type": "_kcpc_replay_start"}:
+                                await set_catch_up(database, lock, feed.id, True)
+                                continue
+                            if feed.catch_up and raw == {"type": "_kcpc_replay_end"}:
+                                await set_catch_up(database, lock, feed.id, False)
+                                continue
+                            event = FeedEvent.model_validate(raw)
                             normalized = normalize(feed.id, event, feed.source)
                             communities = (
                                 route(normalized, routes or []) if normalized else []
@@ -84,6 +89,7 @@ async def run_feed(
                                 normalized,
                                 communities,
                                 feed.aggregation_seconds,
+                                feed.catch_up,
                             )
                             logger.info(
                                 "Feed event received competition_id=%s object_id=%s type=%s community=%s event_id=%s",

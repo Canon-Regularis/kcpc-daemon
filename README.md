@@ -64,7 +64,11 @@ Protect the configuration file because it contains the shared secret. The daemon
 
 ## Recovery
 
-After a daemon restart, each feed resumes after its saved token and queued deliveries remain in SQLite. A Bot outage leaves events in the outbox for retry. Lifecycle events are replayed, and Bachelier telemetry is aggregated in the normal ingestion windows. A downtime catch-up policy that collapses all stale telemetry into one summary is not yet implemented: the feed contract does not currently identify event age or the end of replay. Do not treat the normal windows as that catch-up summary.
+After a daemon restart, each feed resumes after its saved token and queued deliveries remain in SQLite. A Bot outage leaves events in the outbox for retry. Lifecycle events are replayed normally.
+
+Feeds that implement the catch-up extension can set `catch_up: true` in their feed configuration. The feed must send the standalone NDJSON control line `{"type":"_kcpc_replay_start"}` before replaying stale events, followed by `{"type":"_kcpc_replay_end"}` before sending live events. These control lines are not events and have no token. The source must identify the replay boundary; the daemon cannot infer it from the existing feed protocol. A source must emit the end marker even when replay is empty, and must repeat the start marker when it begins a new replay. When reconnecting during a replay, it must continue replay from `since_token` and eventually send the end marker.
+
+Between these markers, Bachelier prices and trades are deduplicated and collapsed into one snapshot per feed, community, and event type using the normal snapshot format. Lifecycle events continue through the outbox individually. Snapshots, deduplication state, and feed cursors are persisted together, so a crash or reconnect during replay does not discard the partial summary. The end marker atomically releases the summaries for delivery. If the end marker never arrives, summaries remain pending; keep `catch_up` enabled until the source completes replay. Without this extension, telemetry continues to use normal aggregation windows and is not collapsed across a downtime replay.
 
 ## Docker
 
