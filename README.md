@@ -14,6 +14,8 @@ uv run kcpc-daemon --config config.yaml
 
 Check the process with `curl http://127.0.0.1:8080/health`. Send Ctrl-C or SIGTERM for graceful shutdown. Configuration is a YAML mapping; all fields shown in the example have defaults, and unknown fields are rejected. The database directory is created on startup. Keep the SQLite file on persistent storage if its state needs to survive restarts. `/health` reports process liveness, not readiness of future feeds or bot delivery.
 
+`/ready` returns 200 when every configured feed is connected and has received bytes within its read timeout; otherwise it returns 503. With no configured feeds it is ready. It does not probe the Bot. `/metrics` exposes Prometheus text metrics for outbox depth, process-lifetime handoff failures, per-feed connection status and seconds since the last received bytes. Feed inactivity is not source event lag; measuring lag requires a source timestamp that the current feed contract does not define. Handoff failure counters reset on restart.
+
 ## Feeds
 
 Add feeds to the configuration to enable ingestion (the default is no feeds):

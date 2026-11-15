@@ -9,6 +9,7 @@ import httpx
 
 from kcpc_daemon.config import FeedConfig, RouteConfig
 from kcpc_daemon.events import FeedEvent, normalize, route
+from kcpc_daemon.monitor import Monitor
 from kcpc_daemon.outbox import record_event
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ async def run_feed(
     database: aiosqlite.Connection,
     routes: list[RouteConfig] | None = None,
     lock: asyncio.Lock | None = None,
+    monitor: Monitor | None = None,
 ) -> None:
     """Reconnect forever; only validated events advance the durable cursor."""
     delay = 1.0
@@ -51,8 +53,13 @@ async def run_feed(
                         != "identity"
                     ):
                         raise ValueError("Compressed feed response")
+                    if monitor is not None:
+                        monitor.connected.add(feed.id)
+                        monitor.active.discard(feed.id)
                     buffer = b""
                     async for chunk in response.aiter_bytes():
+                        if monitor is not None:
+                            monitor.touch(feed.id)
                         buffer += chunk
                         while b"\n" in buffer:
                             line, buffer = buffer.split(b"\n", 1)
@@ -99,5 +106,9 @@ async def run_feed(
                 logger.warning(
                     "Feed error feed_id=%s error=%s", feed.id, type(exc).__name__
                 )
+            finally:
+                if monitor is not None:
+                    monitor.connected.discard(feed.id)
+                    monitor.active.discard(feed.id)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 60.0)
