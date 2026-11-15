@@ -1,4 +1,5 @@
 import asyncio
+import gzip
 import json
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import pytest
 from aiohttp import web
 
 from kcpc_daemon.config import Config, FeedConfig
-from kcpc_daemon.feed import run_feed
+from kcpc_daemon.feed import MAX_EVENT_LINE_BYTES, run_feed
 
 
 async def test_feed_reconnect_and_restart(tmp_path: Path) -> None:
@@ -93,6 +94,11 @@ def test_duplicate_feed_ids_rejected() -> None:
         b'{"type":"teams","token":"bad"}',
         b'{"type":"teams","id":"x","data":{"x":NaN},"token":"bad"}',
         b'{"type":"teams","id":"\xff","data":{},"token":"bad"}',
+        b'{"type":"teams","id":"x","data":'
+        + b"[" * 2000
+        + b"]" * 2000
+        + b',"token":"bad"}',
+        b"x" * (MAX_EVENT_LINE_BYTES + 1),
     ],
 )
 async def test_invalid_event_does_not_advance_cursor(
@@ -131,6 +137,52 @@ async def test_invalid_event_does_not_advance_cursor(
             try:
                 await asyncio.wait_for(retried.wait(), 4)
                 assert requests[:2] == [None, "good"]
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+    finally:
+        await runner.cleanup()
+
+
+async def test_compressed_feed_retries_without_advancing_cursor(tmp_path: Path) -> None:
+    requests: list[str | None] = []
+    retried = asyncio.Event()
+
+    async def feed(request: web.Request) -> web.Response:
+        assert request.headers["Accept-Encoding"] == "identity"
+        requests.append(request.query.get("since_token"))
+        if len(requests) == 1:
+            return web.Response(
+                body=b'{"type":"teams","id":"1","data":{},"token":"good"}\n'
+            )
+        if len(requests) == 2:
+            return web.Response(
+                body=gzip.compress(b"x" * (MAX_EVENT_LINE_BYTES + 1)),
+                headers={"Content-Encoding": "gzip"},
+            )
+        retried.set()
+        return web.Response()
+
+    app = web.Application()
+    app.router.add_get("/", feed)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    assert site._server is not None
+    port = site._server.sockets[0].getsockname()[1]
+    try:
+        async with aiosqlite.connect(tmp_path / "db") as db:
+            await db.execute(
+                "CREATE TABLE feed_cursors (feed_id TEXT PRIMARY KEY, token TEXT NOT NULL)"
+            )
+            await db.commit()
+            task = asyncio.create_task(
+                run_feed(FeedConfig(id="x", url=f"http://127.0.0.1:{port}/"), db)
+            )
+            try:
+                await asyncio.wait_for(retried.wait(), 5)
+                assert requests[:3] == [None, "good", "good"]
             finally:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
