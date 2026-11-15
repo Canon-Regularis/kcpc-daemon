@@ -10,7 +10,7 @@ from kcpc_daemon.events import FeedEvent, normalize
 from kcpc_daemon.outbox import deliver, delivery_key, initialize, record_event
 
 
-@pytest.mark.parametrize("community", ["club café", "club\nother"])
+@pytest.mark.parametrize("community", ["club café", "club\nother", " club", "club "])
 def test_invalid_community_key_rejected(community: str) -> None:
     with pytest.raises(ValueError, match="printable ASCII"):
         RouteConfig(competition_id="contest", community=community)
@@ -56,8 +56,9 @@ async def test_atomic_record_and_retry_delivery(tmp_path: Path) -> None:
                 "contest", FeedEvent(type="teams", id="a", data={}, token="1")
             )
             assert event is not None
-            await record_event(db, lock, "contest", "1", event, ["club"])
-            await record_event(db, lock, "contest", "1", event, ["club"])
+            community = RouteConfig(competition_id="contest", community="coding club")
+            await record_event(db, lock, "contest", "1", event, [community.community])
+            await record_event(db, lock, "contest", "1", event, [community.community])
             async with db.execute("SELECT count(*) FROM outbox") as cursor:
                 assert await cursor.fetchone() == (1,)
             task = asyncio.create_task(
@@ -86,8 +87,8 @@ async def test_atomic_record_and_retry_delivery(tmp_path: Path) -> None:
             assert attempts[0] == attempts[1]
             assert attempts[0][:3] == (
                 "Bearer secret",
-                delivery_key(event.event_id, "club"),
-                "club",
+                delivery_key(event.event_id, community.community),
+                community.community,
             )
             assert attempts[0][3]["event_id"] == event.event_id
             async with db.execute(
