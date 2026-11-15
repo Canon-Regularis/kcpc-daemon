@@ -23,6 +23,7 @@ class FeedConfig(BaseModel):
     read_timeout_seconds: float = Field(default=60, gt=0)
     source: Literal["code_court", "bachelier"] = "code_court"
     aggregation_seconds: int = Field(default=60, ge=1)
+    catch_up: bool = False
 
 
 class RouteConfig(BaseModel):

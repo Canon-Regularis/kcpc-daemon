@@ -53,6 +53,12 @@ async def initialize(database: aiosqlite.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS telemetry_seen (event_id TEXT PRIMARY KEY)"
     )
     await database.execute(
+        "CREATE TABLE IF NOT EXISTS catch_up_feeds (feed_id TEXT PRIMARY KEY)"
+    )
+    await database.execute(
+        "CREATE TABLE IF NOT EXISTS catch_up_snapshots (feed_id TEXT NOT NULL, community TEXT NOT NULL, event_type TEXT NOT NULL, event_id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(feed_id, community, event_type))"
+    )
+    await database.execute(
         "INSERT OR IGNORE INTO telemetry_seen SELECT event_id FROM outbox WHERE aggregate_key IS NOT NULL"
     )
     await database.commit()
@@ -64,6 +70,44 @@ def delivery_key(event_id: str, community: str) -> str:
     ).hexdigest()
 
 
+async def set_catch_up(
+    database: aiosqlite.Connection, lock: asyncio.Lock, feed_id: str, active: bool
+) -> None:
+    """Persist replay boundaries and atomically release finished summaries."""
+    async with lock:
+        try:
+            if active:
+                await database.execute(
+                    "INSERT OR IGNORE INTO catch_up_feeds VALUES (?)", (feed_id,)
+                )
+            else:
+                async with database.execute(
+                    "SELECT event_id, community, payload FROM catch_up_snapshots WHERE feed_id = ?",
+                    (feed_id,),
+                ) as cursor:
+                    snapshots = await cursor.fetchall()
+                for event_id, community, payload in snapshots:
+                    await database.execute(
+                        "INSERT INTO outbox (event_id, community, payload, delivery_key) VALUES (?, ?, ?, ?)",
+                        (
+                            event_id,
+                            community,
+                            payload,
+                            delivery_key(event_id, community),
+                        ),
+                    )
+                await database.execute(
+                    "DELETE FROM catch_up_snapshots WHERE feed_id = ?", (feed_id,)
+                )
+                await database.execute(
+                    "DELETE FROM catch_up_feeds WHERE feed_id = ?", (feed_id,)
+                )
+            await database.commit()
+        except BaseException:
+            await database.rollback()
+            raise
+
+
 async def record_event(
     database: aiosqlite.Connection,
     lock: asyncio.Lock,
@@ -72,9 +116,16 @@ async def record_event(
     event: NormalizedEvent | None,
     communities: list[str],
     aggregation_seconds: int = 60,
+    catch_up: bool = False,
 ) -> None:
     async with lock:
         try:
+            catching_up = False
+            if catch_up:
+                async with database.execute(
+                    "SELECT 1 FROM catch_up_feeds WHERE feed_id = ?", (feed_id,)
+                ) as cursor:
+                    catching_up = await cursor.fetchone() is not None
             if (
                 event is not None
                 and communities
@@ -90,6 +141,50 @@ async def record_event(
             for community in communities if event is not None else []:
                 assert event is not None
                 if event.source == "bachelier" and event.type in TELEMETRY_TYPES:
+                    if catching_up:
+                        async with database.execute(
+                            "SELECT payload FROM catch_up_snapshots WHERE feed_id = ? AND community = ? AND event_type = ?",
+                            (feed_id, community, event.type),
+                        ) as cursor:
+                            existing_catch_up = await cursor.fetchone()
+                        if existing_catch_up:
+                            snapshot = NormalizedEvent.model_validate_json(
+                                existing_catch_up[0]
+                            )
+                            assert snapshot.data is not None
+                            items = snapshot.data["items"]
+                            assert isinstance(items, dict)
+                            items[event.object_id] = event.data
+                            snapshot.data["count"] = int(snapshot.data["count"]) + 1  # type: ignore[call-overload]
+                            await database.execute(
+                                "UPDATE catch_up_snapshots SET payload = ? WHERE feed_id = ? AND community = ? AND event_type = ?",
+                                (
+                                    snapshot.model_dump_json(),
+                                    feed_id,
+                                    community,
+                                    event.type,
+                                ),
+                            )
+                        else:
+                            snapshot = event.model_copy(
+                                update={
+                                    "data": {
+                                        "count": 1,
+                                        "items": {event.object_id: event.data},
+                                    }
+                                }
+                            )
+                            await database.execute(
+                                "INSERT INTO catch_up_snapshots VALUES (?, ?, ?, ?, ?)",
+                                (
+                                    feed_id,
+                                    community,
+                                    event.type,
+                                    event.event_id,
+                                    snapshot.model_dump_json(),
+                                ),
+                            )
+                        continue
                     now = time.time()
                     key = json.dumps([feed_id, community, event.type])
                     async with database.execute(
