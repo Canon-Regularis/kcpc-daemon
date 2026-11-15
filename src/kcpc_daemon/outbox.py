@@ -29,6 +29,12 @@ async def initialize(database: aiosqlite.Connection) -> None:
         )
     if "aggregate_key" not in columns:
         await database.execute("ALTER TABLE outbox ADD COLUMN aggregate_key TEXT")
+    await database.execute(
+        "CREATE TABLE IF NOT EXISTS telemetry_seen (event_id TEXT PRIMARY KEY)"
+    )
+    await database.execute(
+        "INSERT OR IGNORE INTO telemetry_seen SELECT event_id FROM outbox WHERE aggregate_key IS NOT NULL"
+    )
     await database.commit()
 
 
@@ -45,6 +51,19 @@ async def record_event(
         try:
             if event is not None and community is not None:
                 if event.source == "bachelier" and event.type in TELEMETRY_TYPES:
+                    async with database.execute(
+                        "INSERT OR IGNORE INTO telemetry_seen (event_id) VALUES (?)",
+                        (event.event_id,),
+                    ) as cursor:
+                        unseen = cursor.rowcount == 1
+                    if not unseen:
+                        await database.execute(
+                            "INSERT INTO feed_cursors (feed_id, token) VALUES (?, ?) "
+                            "ON CONFLICT(feed_id) DO UPDATE SET token = excluded.token",
+                            (feed_id, token),
+                        )
+                        await database.commit()
+                        return
                     now = time.time()
                     key = json.dumps([feed_id, community, event.type])
                     async with database.execute(
