@@ -9,9 +9,11 @@ from pathlib import Path
 import aiosqlite
 import yaml
 from aiohttp import web
+from pydantic import ValidationError
 
 from kcpc_daemon.config import Config, load_config
 from kcpc_daemon.feed import run_feed
+from kcpc_daemon.outbox import deliver, initialize
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +25,8 @@ async def health(_request: web.Request) -> web.Response:
 async def serve(config: Config, stop: asyncio.Event) -> None:
     config.database_path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(config.database_path) as database:
-        await database.execute(
-            "CREATE TABLE IF NOT EXISTS feed_cursors "
-            "(feed_id TEXT PRIMARY KEY, token TEXT NOT NULL)"
-        )
-        await database.commit()
+        await initialize(database)
+        lock = asyncio.Lock()
         app = web.Application()
         app.router.add_get("/health", health)
         runner = web.AppRunner(app, handle_signals=False)
@@ -39,9 +38,11 @@ async def serve(config: Config, stop: asyncio.Event) -> None:
             await site.start()
             logger.info("Daemon listening on %s:%s", config.host, config.port)
             tasks = [
-                asyncio.create_task(run_feed(feed, database, config.routes))
+                asyncio.create_task(run_feed(feed, database, config.routes, lock))
                 for feed in config.feeds
             ]
+            if config.bot is not None:
+                tasks.append(asyncio.create_task(deliver(database, lock, config.bot)))
             stop_task = asyncio.create_task(stop.wait())
             done, _ = await asyncio.wait(
                 [stop_task, *tasks], return_when=asyncio.FIRST_COMPLETED
@@ -79,7 +80,11 @@ def main() -> None:
     args = parser.parse_args()
     try:
         config = load_config(args.config)
-    except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
+    except ValidationError as exc:
+        parser.exit(2, f"Invalid configuration: {exc.json(include_input=False)}\n")
+    except yaml.YAMLError:
+        parser.exit(2, "Invalid configuration: malformed YAML\n")
+    except (OSError, ValueError, TypeError) as exc:
         parser.exit(2, f"Invalid configuration: {exc}\n")
     logging.basicConfig(
         level=config.log_level,
