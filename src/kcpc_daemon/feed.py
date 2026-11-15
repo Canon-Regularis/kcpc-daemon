@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, StrictStr
 from kcpc_daemon.config import FeedConfig
 
 logger = logging.getLogger(__name__)
+MAX_EVENT_LINE_BYTES = 1024 * 1024
 
 
 def reject_constant(value: str) -> None:
@@ -40,13 +41,22 @@ async def run_feed(feed: FeedConfig, database: aiosqlite.Connection) -> None:
             if row:
                 url = url.copy_set_param("since_token", row[0])
             try:
-                async with client.stream("GET", url) as response:
+                async with client.stream(
+                    "GET", url, headers={"Accept-Encoding": "identity"}
+                ) as response:
                     response.raise_for_status()
+                    if (
+                        response.headers.get("content-encoding", "identity").lower()
+                        != "identity"
+                    ):
+                        raise ValueError("Compressed feed response")
                     buffer = b""
                     async for chunk in response.aiter_bytes():
                         buffer += chunk
                         while b"\n" in buffer:
                             line, buffer = buffer.split(b"\n", 1)
+                            if len(line) > MAX_EVENT_LINE_BYTES:
+                                raise ValueError("Feed event line too long")
                             if not line.strip():
                                 continue
                             event = FeedEvent.model_validate(
@@ -67,8 +77,15 @@ async def run_feed(feed: FeedConfig, database: aiosqlite.Connection) -> None:
                                 event.type,
                             )
                             delay = 1.0
+                        if len(buffer) > MAX_EVENT_LINE_BYTES:
+                            raise ValueError("Feed event line too long")
                 logger.warning("Feed disconnected feed_id=%s", feed.id)
-            except (httpx.HTTPError, UnicodeDecodeError, ValueError) as exc:
+            except (
+                httpx.HTTPError,
+                UnicodeDecodeError,
+                ValueError,
+                RecursionError,
+            ) as exc:
                 logger.warning(
                     "Feed error feed_id=%s error=%s", feed.id, type(exc).__name__
                 )
