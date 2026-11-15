@@ -13,6 +13,7 @@ from kcpc_daemon.monitor import Monitor
 from kcpc_daemon.outbox import record_event
 
 logger = logging.getLogger(__name__)
+MAX_EVENT_LINE_BYTES = 1024 * 1024
 
 
 def reject_constant(value: str) -> None:
@@ -43,8 +44,15 @@ async def run_feed(
             if row:
                 url = url.copy_set_param("since_token", row[0])
             try:
-                async with client.stream("GET", url) as response:
+                async with client.stream(
+                    "GET", url, headers={"Accept-Encoding": "identity"}
+                ) as response:
                     response.raise_for_status()
+                    if (
+                        response.headers.get("content-encoding", "identity").lower()
+                        != "identity"
+                    ):
+                        raise ValueError("Compressed feed response")
                     if monitor is not None:
                         monitor.connected.add(feed.id)
                         monitor.active.discard(feed.id)
@@ -55,6 +63,8 @@ async def run_feed(
                         buffer += chunk
                         while b"\n" in buffer:
                             line, buffer = buffer.split(b"\n", 1)
+                            if len(line) > MAX_EVENT_LINE_BYTES:
+                                raise ValueError("Feed event line too long")
                             if not line.strip():
                                 continue
                             event = FeedEvent.model_validate(
@@ -84,8 +94,15 @@ async def run_feed(
                                 normalized.event_id if normalized else None,
                             )
                             delay = 1.0
+                        if len(buffer) > MAX_EVENT_LINE_BYTES:
+                            raise ValueError("Feed event line too long")
                 logger.warning("Feed disconnected feed_id=%s", feed.id)
-            except (httpx.HTTPError, UnicodeDecodeError, ValueError) as exc:
+            except (
+                httpx.HTTPError,
+                UnicodeDecodeError,
+                ValueError,
+                RecursionError,
+            ) as exc:
                 logger.warning(
                     "Feed error feed_id=%s error=%s", feed.id, type(exc).__name__
                 )
