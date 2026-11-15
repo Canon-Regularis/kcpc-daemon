@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import itertools
 import json
 import logging
 import time
@@ -47,6 +48,12 @@ async def initialize(database: aiosqlite.Connection) -> None:
         except BaseException:
             await database.rollback()
             raise
+    await database.execute(
+        "CREATE TABLE IF NOT EXISTS telemetry_seen (event_id TEXT PRIMARY KEY)"
+    )
+    await database.execute(
+        "INSERT OR IGNORE INTO telemetry_seen SELECT event_id FROM outbox WHERE aggregate_key IS NOT NULL"
+    )
     await database.commit()
 
 
@@ -67,6 +74,18 @@ async def record_event(
 ) -> None:
     async with lock:
         try:
+            if (
+                event is not None
+                and communities
+                and event.source == "bachelier"
+                and event.type in TELEMETRY_TYPES
+            ):
+                async with database.execute(
+                    "INSERT OR IGNORE INTO telemetry_seen (event_id) VALUES (?)",
+                    (event.event_id,),
+                ) as cursor:
+                    if cursor.rowcount != 1:
+                        communities = []
             for community in communities if event is not None else []:
                 assert event is not None
                 if event.source == "bachelier" and event.type in TELEMETRY_TYPES:
@@ -133,55 +152,79 @@ async def deliver(
     database: aiosqlite.Connection, lock: asyncio.Lock, bot: BotConfig
 ) -> None:
     retries: dict[str, float] = {}
+    in_flight: set[str] = set()
+    last_attempt: dict[str, int] = {}
+    sequence = itertools.count()
     async with httpx.AsyncClient(timeout=10.0) as client:
-        while True:
-            async with (
-                lock,
-                database.execute(
-                    "SELECT event_id, community, payload, delivery_key FROM outbox WHERE available_at <= ? ORDER BY rowid LIMIT 1",
-                    (time.time(),),
-                ) as cursor,
-            ):
-                row = await cursor.fetchone()
-            if row is None:
-                await asyncio.sleep(1)
-                continue
-            event_id, community, payload, key = row
-            try:
-                response = await client.post(
-                    str(bot.url),
-                    content=payload,
-                    headers={
-                        "Authorization": f"Bearer {bot.token.get_secret_value()}",
-                        "Idempotency-Key": key,
-                        "X-Community-Key": community,
-                        "Content-Type": "application/json",
-                    },
-                )
-                response.raise_for_status()
-            except httpx.HTTPError as exc:
-                logger.warning(
-                    "Bot delivery failed event_id=%s community=%s error=%s",
-                    event_id,
-                    community,
-                    type(exc).__name__,
-                )
-                delay = min(retries.get(key, 0.5) * 2, 60.0)
-                retries[key] = delay
+
+        async def worker() -> None:
+            while True:
                 async with lock:
-                    await database.execute(
-                        "UPDATE outbox SET available_at = ?, aggregate_key = NULL WHERE event_id = ? AND community = ?",
-                        (time.time() + delay, event_id, community),
+                    async with database.execute(
+                        "SELECT o.event_id, o.community, o.payload, o.delivery_key "
+                        "FROM outbox AS o WHERE o.available_at <= ? AND NOT EXISTS "
+                        "(SELECT 1 FROM outbox AS earlier WHERE earlier.community = o.community AND earlier.rowid < o.rowid) "
+                        "ORDER BY o.rowid",
+                        (time.time(),),
+                    ) as cursor:
+                        rows = await cursor.fetchall()
+                    row = min(
+                        (row for row in rows if row[1] not in in_flight),
+                        key=lambda row: last_attempt.get(row[1], -1),
+                        default=None,
                     )
-                    await database.commit()
-                continue
-            async with lock:
-                await database.execute(
-                    "DELETE FROM outbox WHERE event_id = ? AND community = ?",
-                    (event_id, community),
-                )
-                await database.commit()
-            logger.info(
-                "Bot delivery succeeded event_id=%s community=%s", event_id, community
-            )
-            retries.pop(key, None)
+                    if row is not None:
+                        in_flight.add(row[1])
+                        last_attempt[row[1]] = next(sequence)
+                if row is None:
+                    await asyncio.sleep(1)
+                    continue
+                event_id, community, payload, key = row
+                try:
+                    try:
+                        response = await client.post(
+                            str(bot.url),
+                            content=payload,
+                            headers={
+                                "Authorization": f"Bearer {bot.token.get_secret_value()}",
+                                "Idempotency-Key": key,
+                                "X-Community-Key": community,
+                                "Content-Type": "application/json",
+                            },
+                        )
+                        response.raise_for_status()
+                    except httpx.HTTPError as exc:
+                        logger.warning(
+                            "Bot delivery failed event_id=%s community=%s error=%s",
+                            event_id,
+                            community,
+                            type(exc).__name__,
+                        )
+                        delay = min(retries.get(key, 0.5) * 2, 60.0)
+                        retries[key] = delay
+                        async with lock:
+                            await database.execute(
+                                "UPDATE outbox SET available_at = ?, aggregate_key = NULL WHERE event_id = ? AND community = ?",
+                                (time.time() + delay, event_id, community),
+                            )
+                            await database.commit()
+                        continue
+                    async with lock:
+                        await database.execute(
+                            "DELETE FROM outbox WHERE event_id = ? AND community = ?",
+                            (event_id, community),
+                        )
+                        await database.commit()
+                    logger.info(
+                        "Bot delivery succeeded event_id=%s community=%s",
+                        event_id,
+                        community,
+                    )
+                    retries.pop(key, None)
+                finally:
+                    async with lock:
+                        in_flight.remove(community)
+
+        async with asyncio.TaskGroup() as group:
+            for _ in range(4):
+                group.create_task(worker())
