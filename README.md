@@ -29,6 +29,8 @@ Each feed needs a unique, stable `id` and an HTTP(S) URL. The endpoint should st
 
 For a Bachelier feed set `source: bachelier` and optionally `aggregation_seconds` (default 60) on the feed; the default source is `code_court`. Bachelier types are `prices`, `trades`, `market_events`, and `leaderboard`. Prices and trades are held in separate periodic snapshots per competition and community. A snapshot retains the latest data for each object ID and a count of updates in `data: {count, items}`. Its event ID is the first event's ID, and its type is the source type. Other Bachelier events are delivered individually. Pending snapshots and the cursor are stored together in SQLite and survive restart. The Bachelier feed and Bot support for this proposed snapshot format remain to be integrated.
 
+Telemetry event IDs are retained in SQLite indefinitely to deduplicate replays, since the feed has no bounded replay guarantee. This table grows with the number of routed telemetry events. For snapshots created before this deduplication was introduced, only the first event ID can be recovered; other events already in those snapshots may be counted again if replayed.
+
 Routed events are queued in SQLite together with their feed cursor, so keep the database on persistent storage. Events with no matching route are skipped. A configured Bot receives queued events; without one they remain in the outbox.
 
 ## Code Court events and routes

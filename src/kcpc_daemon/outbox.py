@@ -48,6 +48,12 @@ async def initialize(database: aiosqlite.Connection) -> None:
         except BaseException:
             await database.rollback()
             raise
+    await database.execute(
+        "CREATE TABLE IF NOT EXISTS telemetry_seen (event_id TEXT PRIMARY KEY)"
+    )
+    await database.execute(
+        "INSERT OR IGNORE INTO telemetry_seen SELECT event_id FROM outbox WHERE aggregate_key IS NOT NULL"
+    )
     await database.commit()
 
 
@@ -68,6 +74,18 @@ async def record_event(
 ) -> None:
     async with lock:
         try:
+            if (
+                event is not None
+                and communities
+                and event.source == "bachelier"
+                and event.type in TELEMETRY_TYPES
+            ):
+                async with database.execute(
+                    "INSERT OR IGNORE INTO telemetry_seen (event_id) VALUES (?)",
+                    (event.event_id,),
+                ) as cursor:
+                    if cursor.rowcount != 1:
+                        communities = []
             for community in communities if event is not None else []:
                 assert event is not None
                 if event.source == "bachelier" and event.type in TELEMETRY_TYPES:
