@@ -6,9 +6,9 @@ import logging
 
 import aiosqlite
 import httpx
-from pydantic import BaseModel, ConfigDict, StrictStr
 
-from kcpc_daemon.config import FeedConfig
+from kcpc_daemon.config import FeedConfig, RouteConfig
+from kcpc_daemon.events import FeedEvent, normalize, route
 
 logger = logging.getLogger(__name__)
 MAX_EVENT_LINE_BYTES = 1024 * 1024
@@ -18,16 +18,11 @@ def reject_constant(value: str) -> None:
     raise ValueError(f"Invalid JSON constant: {value}")
 
 
-class FeedEvent(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    type: StrictStr
-    id: StrictStr
-    data: dict[str, object] | None
-    token: StrictStr
-
-
-async def run_feed(feed: FeedConfig, database: aiosqlite.Connection) -> None:
+async def run_feed(
+    feed: FeedConfig,
+    database: aiosqlite.Connection,
+    routes: list[RouteConfig] | None = None,
+) -> None:
     """Reconnect forever; only validated events advance the durable cursor."""
     delay = 1.0
     timeout = httpx.Timeout(10.0, read=feed.read_timeout_seconds)
@@ -64,6 +59,10 @@ async def run_feed(feed: FeedConfig, database: aiosqlite.Connection) -> None:
                                     line.decode("utf-8"), parse_constant=reject_constant
                                 )
                             )
+                            normalized = normalize(feed.id, event)
+                            community = (
+                                route(normalized, routes or []) if normalized else None
+                            )
                             await database.execute(
                                 "INSERT INTO feed_cursors (feed_id, token) VALUES (?, ?) "
                                 "ON CONFLICT(feed_id) DO UPDATE SET token = excluded.token",
@@ -71,10 +70,12 @@ async def run_feed(feed: FeedConfig, database: aiosqlite.Connection) -> None:
                             )
                             await database.commit()
                             logger.info(
-                                "Feed event received feed_id=%s event_id=%s type=%s",
+                                "Feed event received competition_id=%s object_id=%s type=%s community=%s event_id=%s",
                                 feed.id,
                                 event.id,
                                 event.type,
+                                community,
+                                normalized.event_id if normalized else None,
                             )
                             delay = 1.0
                         if len(buffer) > MAX_EVENT_LINE_BYTES:

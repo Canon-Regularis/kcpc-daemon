@@ -29,6 +29,21 @@ Each feed needs a unique, stable `id` and an HTTP(S) URL. The endpoint should st
 
 This milestone logs received events and persists their tokens; it does not retain event contents or deliver them to the Bot. Use a mock feed for MVP 1. Delivery and atomic outbox persistence are planned for a later milestone, so these cursors do not provide delivery guarantees.
 
+## Code Court events and routes
+
+Code Court events of type `contests`, `state`, `problems`, `teams`, `submissions`, `judgements`, and `awards` are normalized. Other types are ignored. A normalized event contains `event_id` (a SHA-256 digest of the JSON-encoded pair of feed ID and token), `competition_id` (the feed ID), `source` (`code_court`), `type`, `object_id`, and `data` (the original object or null for deletion). The same feed token produces the same event ID across reconnects; different feeds have distinct IDs. Tokens must uniquely identify changes within a feed.
+
+An optional route selects one community for each competition. An empty or omitted `event_types` list includes all supported types. For example:
+
+```yaml
+routes:
+  - competition_id: mock-contest
+    community: kcpc
+    event_types: [submissions, judgements]
+```
+
+At this stage the selected community and normalized event ID are logged; events are not yet queued or sent. The community is a logical key, not a Discord channel ID.
+
 ## Docker
 
 ```sh
