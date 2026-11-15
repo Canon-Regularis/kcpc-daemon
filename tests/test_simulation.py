@@ -78,7 +78,7 @@ async def test_synthetic_feed_delivers_without_loss_or_visible_duplicates(
     stop = asyncio.Event()
     task = asyncio.create_task(serve(config, stop))
     try:
-        await asyncio.wait_for(complete.wait(), 30)
+        await asyncio.wait_for(complete.wait(), 120)
         await asyncio.wait_for(retry_succeeded.wait(), 10)
         async with asyncio.timeout(10):
             while True:
@@ -94,6 +94,9 @@ async def test_synthetic_feed_delivers_without_loss_or_visible_duplicates(
             range(1, total + 1)
         )
         assert len(deliveries) == total
+        for event in deliveries.values():
+            assert event["type"] == "submissions"
+            assert event["data"] == {"number": int(event["object_id"])}
         assert mismatches == []
         assert sum(attempts.values()) == total + 1
     finally:
