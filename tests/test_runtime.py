@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from kcpc_daemon.config import Config, FeedConfig, load_config
-from kcpc_daemon.main import serve
+from kcpc_daemon.main import main, serve
 
 
 def test_config_validation(tmp_path: Path) -> None:
@@ -26,6 +26,50 @@ def test_config_validation(tmp_path: Path) -> None:
     path.write_text("[]\n")
     with pytest.raises(TypeError, match="mapping"):
         load_config(path)
+
+
+@pytest.mark.parametrize(
+    ("token", "extra", "expected"),
+    [
+        ("invalid token secret", "", "token must be a nonempty bearer token"),
+        (
+            "valid-secret",
+            "routes:\n  - competition_id: missing\n    community: test\n",
+            "route competition_id must match a feed id",
+        ),
+    ],
+)
+def test_cli_validation_hides_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    token: str,
+    extra: str,
+    expected: str,
+) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(f"bot:\n  url: https://example.com\n  token: '{token}'\n{extra}")
+    monkeypatch.setattr(sys, "argv", ["kcpc-daemon", "--config", str(path)])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    stderr = capsys.readouterr().err
+    assert expected in stderr
+    assert token not in stderr
+
+
+def test_cli_yaml_error_hides_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text("bot:\n  token: secret: value\n")
+    monkeypatch.setattr(sys, "argv", ["kcpc-daemon", "--config", str(path)])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "malformed YAML" in stderr
+    assert "secret" not in stderr
 
 
 async def test_health_and_shutdown(tmp_path: Path) -> None:

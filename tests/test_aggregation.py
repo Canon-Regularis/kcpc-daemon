@@ -36,6 +36,49 @@ async def test_bachelier_aggregation_survives_reopen(tmp_path: Path) -> None:
             assert await cursor.fetchone() == ("2",)
 
 
+async def test_replayed_telemetry_is_not_aggregated_after_delivery(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "db"
+    lock = asyncio.Lock()
+    first = normalize(
+        "trading",
+        FeedEvent(type="prices", id="ABC", data={"price": 10}, token="1"),
+        "bachelier",
+    )
+    second = normalize(
+        "trading",
+        FeedEvent(type="prices", id="ABC", data={"price": 11}, token="2"),
+        "bachelier",
+    )
+    assert first is not None and second is not None
+    async with aiosqlite.connect(path) as db:
+        await initialize(db)
+        await record_event(db, lock, "trading", "1", first, ["club", "other"])
+        await record_event(db, lock, "trading", "1", first, ["club", "other"])
+        async with db.execute(
+            "SELECT payload FROM outbox ORDER BY community"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            assert len(rows) == 2
+            assert all(json.loads(row[0])["data"]["count"] == 1 for row in rows)
+        await db.execute("DELETE FROM outbox")
+        await db.commit()
+    async with aiosqlite.connect(path) as db:
+        await initialize(db)
+        await record_event(db, lock, "trading", "1", first, ["club", "other"])
+        await record_event(db, lock, "trading", "2", second, ["club", "other"])
+        async with db.execute("SELECT event_id, payload FROM outbox") as cursor:
+            rows = await cursor.fetchall()
+        assert len(rows) == 2
+        for event_id, payload in rows:
+            assert event_id == second.event_id
+            assert json.loads(payload)["data"] == {
+                "count": 1,
+                "items": {"ABC": {"price": 11}},
+            }
+
+
 def test_bachelier_event_types() -> None:
     for kind in ("prices", "trades", "market_events", "leaderboard"):
         event = FeedEvent(type=kind, id="1", data={}, token="1")
