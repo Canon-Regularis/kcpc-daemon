@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 
 import aiohttp
+import aiosqlite
 from aiohttp import web
 
 from kcpc_daemon.config import BotConfig, Config, FeedConfig, RouteConfig
@@ -16,10 +17,12 @@ async def test_contest_reaches_mock_bot(tmp_path: Path) -> None:
     received: list[tuple[dict, str, str]] = []
     completed = asyncio.Event()
     requests: list[str | None] = []
+    replay_processed = asyncio.Event()
 
     async def feed(request: web.Request) -> web.Response:
         requests.append(request.query.get("since_token"))
-        if request.query.get("since_token"):
+        if len(requests) >= 3:
+            replay_processed.set()
             return web.Response(text="\n")
         events = [
             {"type": "teams", "id": "team-1", "data": {"name": "Team"}, "token": "1"},
@@ -41,6 +44,9 @@ async def test_contest_reaches_mock_bot(tmp_path: Path) -> None:
                 request.headers["X-Community-Key"],
             )
         )
+        if len(received) == 1:
+            return web.Response(status=503)
+        await asyncio.wait_for(replay_processed.wait(), 5)
         completed.set()
         return web.Response(status=204)
 
@@ -70,8 +76,8 @@ async def test_contest_reaches_mock_bot(tmp_path: Path) -> None:
     stop = asyncio.Event()
     task = asyncio.create_task(serve(config, stop))
     try:
-        await asyncio.wait_for(completed.wait(), 5)
-        assert len(received) == 1
+        await asyncio.wait_for(completed.wait(), 10)
+        assert requests[:3] == [None, "2", "2"]
         event, key, community = received[0]
         assert (event["type"], event["object_id"], event["competition_id"]) == (
             "submissions",
@@ -80,6 +86,17 @@ async def test_contest_reaches_mock_bot(tmp_path: Path) -> None:
         )
         assert key == event["event_id"]
         assert community == "club"
+        async with aiosqlite.connect(config.database_path) as database:
+            async with asyncio.timeout(5):
+                while True:
+                    async with database.execute(
+                        "SELECT count(*) FROM outbox"
+                    ) as cursor:
+                        if await cursor.fetchone() == (0,):
+                            break
+                    await asyncio.sleep(0.01)
+        assert len(received) == 2
+        assert received[0] == received[1]
         async with (
             aiohttp.ClientSession() as session,
             session.get(f"http://127.0.0.1:{daemon_port}/health") as response,
